@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from flowengine.agent.bindings import check_bindings
 from flowengine.agent.issues import FlowIssue, IssueCode
 from flowengine.agent.meta import ComponentMeta
 from flowengine.config.registry import ComponentRegistry, load_component_class
@@ -361,4 +362,5 @@ def validate_semantics(
     issues.extend(_check_cycles_and_terminals(config))
     issues.extend(_check_contract(config, meta_map))
     issues.extend(_check_approvals(config, meta_map))
+    issues.extend(check_bindings(config, meta_map))
     return issues

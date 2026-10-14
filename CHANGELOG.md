@@ -35,6 +35,28 @@ executor now re-enters the graph at the node that suspended.
   through `FlowContext.to_dict()` / `from_dict()` and default to empty for
   contexts saved by earlier versions.
 
+- **Data bindings / per-node namespaces** (`flowengine.core.binding`). A graph
+  node may carry a `bind:` block — `inputs` map a key the component reads to a
+  reference `<node_id>.<key>[.path]` (`flow.<key>` for flow inputs), a literal
+  `{ value: ... }` or a safe-AST expression `{ expr: ... }`; `outputs` may
+  rename a produced key within the node's own namespace. A flow with a `bind`
+  on any node runs in **namespaced mode**: every node executes behind a
+  `BoundComponent` on a `ScopedContext` (reads fall through to the parent,
+  writes land in `context.data.<node_id>`), two instances of one component no
+  longer collide, a node sees its own earlier outputs on later visits (loop
+  state), unbound nodes are mirrored to raw keys for consumers that predate
+  bindings, and the raw initial keys are snapshotted as `context.data.flow`.
+  Components and skills are untouched. Flows without `bind` are not wrapped and
+  behave byte-identically. `GraphNodeConfig` also gains `provenance` (a
+  per-input provenance class carried for policy, not interpreted by the engine).
+- **Binding checks in `validate_semantics`** (`flowengine.agent.bindings`), with
+  repair patches: `UNKNOWN_BINDING_NODE`, `UNDECLARED_BINDING_KEY`,
+  `BINDING_NOT_UPSTREAM` (a warning when the source only reaches the node
+  through a cycle), `BINDING_FOREIGN_TARGET`, `UNBOUND_INPUT`,
+  `BINDING_TYPE_MISMATCH`, `BINDING_EXPR_INVALID`.
+- `ComponentMeta.data_classes` — the data classes a component may emit or
+  handle (policy vocabulary), exported in the catalog entry.
+
 ### Changed
 
 - **`metadata.suspended_at_node` is always the node id.** Components call

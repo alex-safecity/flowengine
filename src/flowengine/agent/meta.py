@@ -113,6 +113,10 @@ class ComponentMeta(BaseModel):
     requires_llm: bool = Field(
         default=False, description="Whether the component needs an LLM provider"
     )
+    data_classes: list[str] = Field(
+        default_factory=list,
+        description="Data classes this component may emit or handle (policy vocabulary)",
+    )
 
     @property
     def port_names(self) -> list[str]:
@@ -149,5 +153,6 @@ class ComponentMeta(BaseModel):
             "effects": self.effects,
             "requires_approval": self.requires_approval,
             "requires_llm": self.requires_llm,
+            "data_classes": self.data_classes,
             "safe_for_agents": self.is_safe_for_agents,
         }

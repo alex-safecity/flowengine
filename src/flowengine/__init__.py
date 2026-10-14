@@ -46,14 +46,18 @@ from flowengine.core.checkpoint import (
 from flowengine.config.loader import ConfigLoader
 from flowengine.config.registry import ComponentRegistry, load_component_class
 from flowengine.config.schema import (
+    BindingExpr,
+    BindingLiteral,
     ComponentConfig,
     FlowConfig,
     FlowDefinition,
     FlowSettings,
     GraphEdgeConfig,
     GraphNodeConfig,
+    NodeBinding,
     StepConfig,
 )
+from flowengine.core.binding import BindingError, BoundComponent, ScopedContext
 
 # Evaluation
 from flowengine.eval.evaluator import ConditionEvaluator
@@ -133,6 +137,13 @@ __all__ = [
     "FlowDefinition",
     "GraphNodeConfig",
     "GraphEdgeConfig",
+    "NodeBinding",
+    "BindingLiteral",
+    "BindingExpr",
+    # Bindings (0.7.0)
+    "BoundComponent",
+    "ScopedContext",
+    "BindingError",
     # Evaluation
     "ConditionEvaluator",
     "SafeASTValidator",

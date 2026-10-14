@@ -126,6 +126,45 @@ class StepConfig(BaseModel):
     )
 
 
+class BindingLiteral(BaseModel):
+    """A bound input given as a literal value: ``{ value: ... }``."""
+
+    value: Any = Field(..., description="Literal value for the input")
+
+
+class BindingExpr(BaseModel):
+    """A bound input computed by a safe-AST expression: ``{ expr: "..." }``.
+
+    The expression sees the flow inputs as ``flow`` and every node namespace by
+    node id (``n_lookup.rows``), plus ``context``; the same allow-list as edge
+    conditions applies (no calls).
+    """
+
+    expr: str = Field(..., description="Expression over the node namespaces")
+
+
+BindingSource = str | BindingLiteral | BindingExpr
+"""A bound input: a reference string ``<node_id>.<key>[.<path>...]`` (``flow``
+for flow inputs), a literal, or an expression."""
+
+
+class NodeBinding(BaseModel):
+    """Data bindings of a graph node (the *data wires* of a canvas).
+
+    Attributes:
+        inputs: Key the component reads -> where its value comes from.
+        outputs: Key the component writes -> ``<own_node_id>.<key>`` target.
+            Every key a node writes lands in its own namespace by default.
+    """
+
+    inputs: dict[str, BindingSource] = Field(
+        default_factory=dict, description="Consumed key -> reference, literal or expr"
+    )
+    outputs: dict[str, str] = Field(
+        default_factory=dict, description="Produced key -> <node_id>.<key> target"
+    )
+
+
 class GraphNodeConfig(BaseModel):
     """A node in a graph flow.
 
@@ -136,6 +175,12 @@ class GraphNodeConfig(BaseModel):
         on_error: How to handle errors (fail/skip/continue)
         max_visits: Maximum times this node can execute in cyclic graphs.
             None means use the flow-level max_iterations setting.
+        bind: Data bindings. A flow with a ``bind`` on any node runs in
+            namespaced mode: every node writes into ``context.data.<node_id>``
+            (see :mod:`flowengine.core.binding`).
+        provenance: Provenance class per bound input (``citizen``, ``model``,
+            ``document``, ``system_of_record``, ``identity.verified``, ...).
+            Carried for policy; the engine does not interpret it.
     """
 
     id: str = Field(..., description="Unique node ID within the graph")
@@ -151,6 +196,12 @@ class GraphNodeConfig(BaseModel):
     max_visits: Optional[int] = Field(
         default=None,
         description="Max executions in cyclic graphs (None = use flow max_iterations)",
+    )
+    bind: Optional[NodeBinding] = Field(
+        default=None, description="Data bindings (inputs/outputs) of this node"
+    )
+    provenance: Optional[dict[str, str]] = Field(
+        default=None, description="Provenance class per input key (policy metadata)"
     )
 
 

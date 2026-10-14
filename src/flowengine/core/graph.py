@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from flowengine.config.schema import FlowSettings, GraphEdgeConfig, GraphNodeConfig
+from flowengine.core.binding import bind_components, seed_flow_namespace
 from flowengine.core.component import BaseComponent
 from flowengine.core.context import FlowContext
 from flowengine.errors import (
@@ -78,6 +79,12 @@ class GraphExecutor:
             target for _, target in self._back_edges
         }
 
+        # Data bindings: in namespaced mode every node runs behind a
+        # BoundComponent (its own namespace); legacy flows are not wrapped
+        self._bound: dict[str, BaseComponent] | None = bind_components(
+            nodes, components
+        )
+
     def execute(
         self, context: FlowContext, *, resume_node: str | None = None
     ) -> FlowContext:
@@ -123,6 +130,8 @@ class GraphExecutor:
         if resume_node is None:
             resume_node = context.metadata.suspended_at_node
         if resume_node is None:
+            if self._bound is not None:
+                seed_flow_namespace(context, list(self._nodes.values()))
             return None
         if resume_node not in self._nodes:
             # Contexts suspended before 0.7 may carry the component name the
@@ -160,11 +169,7 @@ class GraphExecutor:
             FlowTimeoutError: If flow timeout exceeded before node starts.
             ComponentError: If node fails and error policy is 'fail'.
         """
-        component = self._components.get(node.component)
-        if not component:
-            raise FlowExecutionError(
-                f"Component not found for node '{node_id}': {node.component}"
-            )
+        component = self._component_for(node_id, node)
 
         # Calculate remaining timeout
         elapsed = time.time() - flow_start_time
@@ -254,6 +259,18 @@ class GraphExecutor:
             context.metadata.deadline_checked = False
 
         return context
+
+    def _component_for(self, node_id: str, node: GraphNodeConfig) -> BaseComponent:
+        """The component to run for a node: bound in namespaced mode, raw otherwise."""
+        component = (
+            self._bound.get(node_id) if self._bound is not None
+            else self._components.get(node.component)
+        )
+        if not component:
+            raise FlowExecutionError(
+                f"Component not found for node '{node_id}': {node.component}"
+            )
+        return component
 
     @staticmethod
     def _record_suspension(node_id: str, context: FlowContext) -> None:
@@ -491,11 +508,7 @@ class GraphExecutor:
         flow_start_time: float,
     ) -> FlowContext:
         """Async twin of :meth:`_execute_node` (awaits coroutine ``process``)."""
-        component = self._components.get(node.component)
-        if not component:
-            raise FlowExecutionError(
-                f"Component not found for node '{node_id}': {node.component}"
-            )
+        component = self._component_for(node_id, node)
 
         elapsed = time.time() - flow_start_time
         if self._settings.timeout_seconds:
