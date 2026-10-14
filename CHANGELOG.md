@@ -59,9 +59,13 @@ executor now re-enters the graph at the node that suspended.
 - `FlowSettings.executor` (`"graph"`) — the executor path a graph flow commits
   to; runtimes may require it.
 - `metadata.guard_decisions` — verdicts of a runtime guard (one dict per
-  decision), serialised with the context. The port name `error` is implicit on
-  every node (`UNDECLARED_PORT` does not fire for it): a guard that blocks a
-  step routes on it, so authors can wire a fallback edge.
+  decision), serialised with the context. The port `error`
+  (`flowengine.core.graph.ERROR_PORT`) is implicit on every node
+  (`UNDECLARED_PORT` does not fire for it) and **exclusive**: while it is
+  active only `port: error` edges propagate — unconditional edges do not — so
+  a guard that blocks a step halts everything downstream unless a fallback is
+  wired. `context.current_node` names the node the graph executor is running
+  (transient).
 
 ### Changed
 

@@ -410,6 +410,8 @@ class FlowContext:
 
     # Port-based routing (transient execution state)
     _active_port: Optional[str] = field(default=None, repr=False)
+    # Node being executed by the graph executor (transient, not serialised)
+    _current_node: Optional[str] = field(default=None, repr=False)
 
     def set(self, key: str, value: Any) -> None:
         """Set a value in the data container.
@@ -463,6 +465,11 @@ class FlowContext:
     def get_active_port(self) -> Optional[str]:
         """Get the active output port (used by graph executor)."""
         return self._active_port
+
+    @property
+    def current_node(self) -> Optional[str]:
+        """Id of the graph node being executed, if any (set by the executor)."""
+        return self._current_node
 
     def clear_port(self) -> None:
         """Reset active port (called by executor between nodes)."""

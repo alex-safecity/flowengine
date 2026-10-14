@@ -344,3 +344,57 @@ class TestSerialisation:
         d["metadata"].pop("pending_nodes")
         back = FlowContext.from_dict(d)
         assert back.metadata.node_ports == {} and back.metadata.pending_nodes == []
+
+
+class TestErrorPort:
+    """The implicit, exclusive error port a runtime guard routes on."""
+
+    def _executor(self, inst, extra_edges=()):
+        from flowengine.core.graph import ERROR_PORT
+
+        nodes = [
+            {"id": "n_g", "component": "g"},
+            {"id": "n_x", "component": "x"},
+            {"id": "n_fb", "component": "fb"},
+        ]
+        edges = [{"source": "n_g", "target": "n_x"}, *extra_edges]
+        return _executor(nodes, edges, inst), ERROR_PORT
+
+    def test_error_port_takes_only_error_edges(self):
+        class Fail(BaseComponent):
+            def process(self, context):
+                self.set_output_port(context, "error")
+                return context
+
+        inst = _instances(g=(Fail, {}), x=(Append, {}), fb=(Append, {}))
+        ex, port = self._executor(inst, [{"source": "n_g", "target": "n_fb", "port": "error"}])
+        ctx = ex.execute(FlowContext())
+        assert ctx.get("order") == ["fb"]
+        assert ctx.metadata.node_ports["n_g"] == "error"
+        assert "x" in ctx.metadata.skipped_components
+
+    def test_error_port_without_an_error_edge_halts_downstream(self):
+        class Fail(BaseComponent):
+            def process(self, context):
+                self.set_output_port(context, "error")
+                return context
+
+        inst = _instances(g=(Fail, {}), x=(Append, {}), fb=(Append, {}))
+        # fb hangs off x (not an error edge): nothing downstream of the block runs
+        ex, _ = self._executor(inst, [{"source": "n_x", "target": "n_fb"}])
+        ctx = ex.execute(FlowContext())
+        assert ctx.get("order") is None
+        assert {"x", "fb"} <= set(ctx.metadata.skipped_components)
+
+    def test_current_node_is_visible_to_components(self):
+        seen = []
+
+        class Peek(BaseComponent):
+            def process(self, context):
+                seen.append(context.current_node)
+                return context
+
+        inst = _instances(g=(Peek, {}), x=(Peek, {}), fb=(Append, {}))
+        ex, _ = self._executor(inst)
+        ex.execute(FlowContext())
+        assert seen == ["n_g", "n_x"]

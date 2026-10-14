@@ -33,6 +33,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Every node may route on this port without declaring it. A runtime guard that
+#: blocks a step sets it; while it is active only ``port: error`` edges propagate
+#: (unconditional edges do not), so a block halts everything downstream unless a
+#: fallback is wired explicitly.
+ERROR_PORT = "error"
+
 
 class GraphExecutor:
     """Executes a graph-type flow using topological ordering with port-based routing.
@@ -189,6 +195,7 @@ class GraphExecutor:
 
         # Clear port before execution
         context.clear_port()
+        context._current_node = node_id
 
         self._notify("on_node_start", node_id, node.component, context)
 
@@ -526,6 +533,7 @@ class GraphExecutor:
             remaining = None
 
         context.clear_port()
+        context._current_node = node_id
         self._notify("on_node_start", node_id, node.component, context)
 
         start_time = time.time()
@@ -785,6 +793,14 @@ class GraphExecutor:
         outgoing = self._forward.get(node_id, [])
         if not outgoing:
             return []
+
+        if active_port == ERROR_PORT:
+            # The error path is exclusive: nothing but explicit error edges
+            return [
+                e.target
+                for e in outgoing
+                if e.port == ERROR_PORT and self._edge_condition_ok(e, context)
+            ]
 
         has_port_edges = any(e.port is not None for e in outgoing)
 

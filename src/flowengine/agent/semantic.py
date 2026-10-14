@@ -20,24 +20,19 @@ This matters because agent-generated flows often use symbolic component types
 
 from __future__ import annotations
 
-from typing import Optional
-
 from flowengine.agent.bindings import check_bindings
 from flowengine.agent.issues import FlowIssue, IssueCode
 from flowengine.agent.meta import ComponentMeta
 from flowengine.config.registry import ComponentRegistry, load_component_class
 from flowengine.config.schema import FlowConfig
+from flowengine.core.graph import ERROR_PORT as IMPLICIT_ERROR_PORT
 from flowengine.errors import ConfigurationError
-
-#: Port every node may route on without declaring it: a runtime guard that
-#: blocks a step sets it, so authors can wire a fallback (``port: error``).
-IMPLICIT_ERROR_PORT = "error"
 
 
 def resolve_component_meta(
     type_path: str,
-    registry: Optional[ComponentRegistry] = None,
-) -> Optional[ComponentMeta]:
+    registry: ComponentRegistry | None = None,
+) -> ComponentMeta | None:
     """Best-effort resolution of a component type to its ``ComponentMeta``.
 
     Tries, in order: a registered class (by name or path), then dynamic import of
@@ -71,8 +66,8 @@ def resolve_component_meta(
 
 def build_meta_map(
     config: FlowConfig,
-    registry: Optional[ComponentRegistry] = None,
-    metas: Optional[dict[str, ComponentMeta]] = None,
+    registry: ComponentRegistry | None = None,
+    metas: dict[str, ComponentMeta] | None = None,
 ) -> dict[str, ComponentMeta]:
     """Map each *component name* in the flow to its ``ComponentMeta`` (if any).
 
@@ -116,7 +111,7 @@ def _graph_adjacency(
 def _find_cycle_nodes(outgoing: dict[str, list]) -> set[str]:
     """Return the set of nodes that participate in at least one cycle."""
     WHITE, GRAY, BLACK = 0, 1, 2
-    color: dict[str, int] = {n: WHITE for n in outgoing}
+    color: dict[str, int] = dict.fromkeys(outgoing, WHITE)
     in_cycle: set[str] = set()
     stack: list[str] = []
 
@@ -334,7 +329,7 @@ def _check_approvals(
     return issues
 
 
-def _closest(word: str, candidates: list[str]) -> Optional[str]:
+def _closest(word: str, candidates: list[str]) -> str | None:
     """Return the closest candidate by edit distance, if reasonably close."""
     if not candidates:
         return None
@@ -346,8 +341,8 @@ def _closest(word: str, candidates: list[str]) -> Optional[str]:
 
 def validate_semantics(
     config: FlowConfig,
-    registry: Optional[ComponentRegistry] = None,
-    metas: Optional[dict[str, ComponentMeta]] = None,
+    registry: ComponentRegistry | None = None,
+    metas: dict[str, ComponentMeta] | None = None,
 ) -> list[FlowIssue]:
     """Run all semantic checks against a (schema-valid) flow configuration.
 
