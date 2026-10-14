@@ -24,6 +24,9 @@ _TOP_LEVEL_ORDER = [
     "outputs",
     "components",
     "flow",
+    "service",
+    "triggers",
+    "studio",
 ]
 
 

@@ -367,6 +367,19 @@ class FlowConfig(BaseModel):
     )
     flow: FlowDefinition = Field(..., description="Flow definition")
 
+    # Authoring-tool blocks the engine carries but never interprets (0.7.0). A studio
+    # owns their schemas; here they are opaque so they survive load → normalise → dump
+    # byte-for-byte and never affect execution.
+    service: Optional[dict[str, Any]] = Field(
+        default=None, description="Business framing (owner, department, channel, ...)"
+    )
+    triggers: Optional[list[dict[str, Any]]] = Field(
+        default=None, description="How the flow is started (http, citizen channel, ...)"
+    )
+    studio: Optional[dict[str, Any]] = Field(
+        default=None, description="Canvas layout, groups and notes; ignored by the engine"
+    )
+
     @field_validator("components")
     @classmethod
     def validate_unique_names(

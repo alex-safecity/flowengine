@@ -9,14 +9,14 @@ the plan matches real execution semantics.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from flowengine.agent.meta import ComponentMeta
 from flowengine.agent.semantic import build_meta_map
 from flowengine.config.registry import ComponentRegistry
-from flowengine.config.schema import FlowConfig
+from flowengine.config.schema import FlowConfig, GraphNodeConfig
 from flowengine.core.graph import GraphExecutor
 
 
@@ -28,14 +28,23 @@ class Branch(BaseModel):
     target: str
 
 
+class DataEdge(BaseModel):
+    """A data wire: where a node's bound input comes from (0.7.0 bindings)."""
+
+    source: str = Field(description="'<node>.<key>[.path]', 'flow.<key>', or 'literal'/'expr'")
+    target: str = Field(description="'<node>.<input key>'")
+    kind: str = Field(description="reference | literal | expr")
+
+
 class FlowPlan(BaseModel):
     """A machine-readable execution plan for a flow."""
 
     flow_type: str
     execution_order: list[str] = Field(default_factory=list)
     branches: list[Branch] = Field(default_factory=list)
+    data_edges: list[DataEdge] = Field(default_factory=list)
     possible_cycles: bool = False
-    max_iterations: Optional[int] = None
+    max_iterations: int | None = None
     required_components: list[str] = Field(default_factory=list)
     context_inputs: list[str] = Field(default_factory=list)
     context_outputs: list[str] = Field(default_factory=list)
@@ -46,7 +55,7 @@ class FlowPlan(BaseModel):
 
 def explain(
     config: FlowConfig,
-    registry: Optional[ComponentRegistry] = None,
+    registry: ComponentRegistry | None = None,
 ) -> FlowPlan:
     """Produce a :class:`FlowPlan` describing how ``config`` would execute."""
     flow = config.flow
@@ -100,12 +109,32 @@ def _explain_graph(
         flow_type="graph",
         execution_order=order,
         branches=branches,
+        data_edges=_data_edges(nodes),
         possible_cycles=has_cycles,
         max_iterations=config.flow.settings.max_iterations if has_cycles else None,
         required_components=required,
         context_inputs=_context_inputs(config, node_order_components, metas),
         context_outputs=_context_outputs(config, metas),
     )
+
+
+def _data_edges(nodes: list[GraphNodeConfig]) -> list[DataEdge]:
+    """The resolved data-dependency graph next to the control graph."""
+    from flowengine.config.schema import BindingExpr, BindingLiteral
+
+    edges: list[DataEdge] = []
+    for node in nodes:
+        if node.bind is None:
+            continue
+        for key, src in node.bind.inputs.items():
+            target = f"{node.id}.{key}"
+            if isinstance(src, BindingLiteral):
+                edges.append(DataEdge(source="literal", target=target, kind="literal"))
+            elif isinstance(src, BindingExpr):
+                edges.append(DataEdge(source=f"expr: {src.expr}", target=target, kind="expr"))
+            else:
+                edges.append(DataEdge(source=src, target=target, kind="reference"))
+    return edges
 
 
 def _cyclic_order(executor: GraphExecutor, nodes: list) -> list[str]:

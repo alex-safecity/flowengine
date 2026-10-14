@@ -58,6 +58,13 @@ executor now re-enters the graph at the node that suspended.
   handle (policy vocabulary), exported in the catalog entry.
 - `FlowSettings.executor` (`"graph"`) — the executor path a graph flow commits
   to; runtimes may require it.
+- **Authoring blocks pass through.** `FlowConfig` carries `service`, `triggers`
+  and `studio` as opaque blocks: loaded, normalised (after `flow`, in that
+  order) and dumped byte-for-byte, never interpreted by the engine. The schema
+  export includes them along with `bind`, `provenance` and `executor`.
+- **`plan` shows data edges.** `FlowPlan.data_edges` lists every bound input
+  (`<node>.<key> ==> <node>.<input>`, literals and expressions marked) next to
+  the control branches; the CLI prints them.
 - `metadata.guard_decisions` — verdicts of a runtime guard (one dict per
   decision), serialised with the context. The port `error`
   (`flowengine.core.graph.ERROR_PORT`) is implicit on every node

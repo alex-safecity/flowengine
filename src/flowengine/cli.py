@@ -23,7 +23,6 @@ import importlib
 import json
 import sys
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -32,7 +31,7 @@ def _read(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def _load_policy(path: Optional[str]):
+def _load_policy(path: str | None):
     """Load an ExecutionPolicy from a YAML/JSON file, or None."""
     if not path:
         return None
@@ -45,7 +44,7 @@ def _load_policy(path: Optional[str]):
     return ExecutionPolicy.model_validate(data)
 
 
-def _build_registry(modules: Optional[list[str]]):
+def _build_registry(modules: list[str] | None):
     """Registry seeded with builtin contrib components plus any --module imports."""
     from flowengine.config.registry import ComponentRegistry
     from flowengine.core.component import BaseComponent
@@ -117,6 +116,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
             print("branches:")
             for b in plan.branches:
                 print(f"  {b.source} --[{b.port}]--> {b.target}")
+        if plan.data_edges:
+            print("data_edges:")
+            for d in plan.data_edges:
+                print(f"  {d.source} ==> {d.target}")
         print(f"possible_cycles: {plan.possible_cycles}")
         if plan.possible_cycles:
             print(f"max_iterations: {plan.max_iterations}")
@@ -299,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
