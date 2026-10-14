@@ -354,7 +354,9 @@ class FlowEngine:
 
         return context
 
-    def _execute_graph(self, context: FlowContext) -> FlowContext:
+    def _execute_graph(
+        self, context: FlowContext, resume_node: str | None = None
+    ) -> FlowContext:
         """Execute a graph-type flow using the GraphExecutor."""
         from flowengine.core.graph import GraphExecutor
 
@@ -366,7 +368,7 @@ class FlowEngine:
             hooks=self._hooks,
             evaluator=self.evaluator,
         )
-        return executor.execute(context)
+        return executor.execute(context, resume_node=resume_node)
 
     def resume(
         self,
@@ -390,16 +392,15 @@ class FlowEngine:
             raise FlowExecutionError(f"Checkpoint not found: {checkpoint_id}")
 
         context = FlowContext.from_dict(checkpoint.context)
-        context.metadata.suspended = False
-        context.metadata.suspended_at_node = None
-        context.metadata.suspension_reason = None
+        resume_node = context.metadata.suspended_at_node
 
         if resume_data:
             context.set("resume_data", resume_data)
 
-        # Re-execute graph from the suspended node onward
-        # (completed_nodes tells the executor which nodes to skip)
-        result = self._execute_graph(context)
+        # Re-enter the graph at the suspended node; completed nodes are
+        # skipped and propagate the ports they set (the executor clears the
+        # suspension flags itself)
+        result = self._execute_graph(context, resume_node=resume_node)
 
         self._checkpoint_store.delete(checkpoint_id)
         return result

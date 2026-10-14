@@ -1342,7 +1342,8 @@ class TestCyclicSuspension:
         result = engine.execute()
 
         assert result.metadata.suspended is True
-        assert result.metadata.suspended_at_node == "cs"
+        # The executor records the node id, whatever the component passed
+        assert result.metadata.suspended_at_node == "s"
 
     def test_suspend_preserves_visit_counts(self):
         """Visit counts are preserved when flow suspends."""
@@ -1406,10 +1407,8 @@ class TestCyclicSuspension:
         result = engine.execute()
         assert result.metadata.suspended is True
 
-        # For resume: clear suspension, but keep visit counts
-        result.metadata.suspended = False
-        result.metadata.suspension_reason = None
-        # suspended_at_node stays set for the resume
+        # For resume: suspended_at_node stays set; the executor clears the
+        # suspension flags itself and re-enters at that node
 
         # Replace cs with an AppendComponent to avoid re-suspending
         replacement = AppendComponent("cs")

@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-14
+
+Correct **resume** in the `GraphExecutor`. In 0.6.0 a suspended graph could only
+be resumed by re-running it from the roots: the DAG executor skipped completed
+nodes but did not know which port they had set, so a suspended node behind a
+port edge was silently skipped and the run reported complete; the cyclic
+executor restarted from the roots when the caller cleared `suspended_at_node`,
+re-executing everything upstream of the suspension. Both are fixed; the
+executor now re-enters the graph at the node that suspended.
+
+### Added
+
+- **`GraphExecutor.execute(context, resume_node=...)`** and
+  `execute_async(..., resume_node=...)`. The resume node defaults to
+  `context.metadata.suspended_at_node` when still set, so a restored context
+  resumes without the caller clearing anything; the executor clears the
+  suspension flags itself before re-executing the node (which may suspend
+  again). An unknown node raises `FlowExecutionError`; a component name (what
+  pre-0.7 contexts may carry) is mapped to its node when unambiguous.
+- **`metadata.node_ports`** — the output port each completed node set when it
+  ran (`None` when it set none). On resume, completed nodes propagate through
+  these ports instead of through unconditional edges only.
+- **`metadata.pending_nodes`** — the nodes still in the cyclic executor's ready
+  queue when the graph suspended; the resume re-enqueues them after the
+  suspended node so a fan-out in progress completes. Both fields round-trip
+  through `FlowContext.to_dict()` / `from_dict()` and default to empty for
+  contexts saved by earlier versions.
+
+### Changed
+
+- **`metadata.suspended_at_node` is always the node id.** Components call
+  `context.suspend(name, ...)` without knowing their node; the executor now
+  records the id of the node it was executing. Code that compared the field
+  with a component name must compare with the node id.
+- **A suspended execution is not a visit.** The cyclic executor increments
+  `node_visit_counts` only after a completed (non-suspended) execution, so a
+  node is neither double-counted nor exhausted (`max_visits: 1`) by its own
+  suspension, and a resume at a back-edge target does not open a second
+  iteration for the same re-entry.
+- `FlowEngine.resume()` passes the checkpoint's suspended node to the executor
+  instead of clearing it.
+
 ## [0.6.0] - 2026-06-15
 
 Richer graph execution: edge **conditions** and **async** components in the

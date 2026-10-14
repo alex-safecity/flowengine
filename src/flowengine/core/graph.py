@@ -44,6 +44,11 @@ class GraphExecutor:
     - Port routing: When a component sets active_port, only matching edges propagate
     - Unreachable nodes: If no incoming edge was activated, the node is skipped
     - Completed nodes: Nodes in completed_nodes are skipped (for resume support)
+    - Resume: ``execute(context, resume_node=...)`` (or a context whose
+      ``metadata.suspended_at_node`` is still set) re-enters the graph at the
+      node that suspended. Completed nodes propagate the output port they set
+      when they ran (``metadata.node_ports``), so the suspended node is reached
+      through the same edges as before and nothing upstream re-executes.
     """
 
     def __init__(
@@ -73,28 +78,67 @@ class GraphExecutor:
             target for _, target in self._back_edges
         }
 
-    def execute(self, context: FlowContext) -> FlowContext:
+    def execute(
+        self, context: FlowContext, *, resume_node: str | None = None
+    ) -> FlowContext:
         """Execute the graph flow (synchronous components only).
 
         Dispatches to the DAG executor for acyclic graphs, or the cyclic
         executor for graphs containing cycles. For graphs whose components have
         async ``process`` coroutines, use :meth:`execute_async`.
-        """
-        if self._has_cycles:
-            return self._execute_cyclic(context)
-        return self._execute_dag(context)
 
-    async def execute_async(self, context: FlowContext) -> FlowContext:
+        Args:
+            context: Fresh context, or one restored from a suspended run.
+            resume_node: Node to re-enter at after a suspension. Defaults to
+                ``context.metadata.suspended_at_node`` when that is still set;
+                ``None`` with no suspended node starts from the roots.
+        """
+        resume_node = self._begin(context, resume_node)
+        if self._has_cycles:
+            return self._execute_cyclic(context, resume_node)
+        return self._execute_dag(context, resume_node)
+
+    async def execute_async(
+        self, context: FlowContext, *, resume_node: str | None = None
+    ) -> FlowContext:
         """Execute the graph flow, awaiting components with coroutine ``process``.
 
         Mirrors :meth:`execute` but supports both sync and async components: a
         component whose ``process`` returns a coroutine is awaited; sync
         components run inline. Routing, port/condition gating, cycle handling,
-        suspension and hooks are identical to the sync path.
+        suspension, resume and hooks are identical to the sync path.
         """
+        resume_node = self._begin(context, resume_node)
         if self._has_cycles:
-            return await self._execute_cyclic_async(context)
-        return await self._execute_dag_async(context)
+            return await self._execute_cyclic_async(context, resume_node)
+        return await self._execute_dag_async(context, resume_node)
+
+    def _begin(self, context: FlowContext, resume_node: str | None) -> str | None:
+        """Resolve the resume node and clear the suspension flags for a resume.
+
+        The suspended node is re-executed (it re-processes with any
+        ``resume_data``), so the flags it set last time are cleared here; the
+        node may suspend again. Returns ``None`` for a fresh run.
+        """
+        if resume_node is None:
+            resume_node = context.metadata.suspended_at_node
+        if resume_node is None:
+            return None
+        if resume_node not in self._nodes:
+            # Contexts suspended before 0.7 may carry the component name the
+            # component passed to ``suspend()``; accept it when unambiguous
+            by_component = [
+                nid for nid, n in self._nodes.items() if n.component == resume_node
+            ]
+            if len(by_component) != 1:
+                raise FlowExecutionError(
+                    f"Cannot resume: unknown node '{resume_node}'"
+                )
+            resume_node = by_component[0]
+        context.metadata.suspended = False
+        context.metadata.suspended_at_node = None
+        context.metadata.suspension_reason = None
+        return resume_node
 
     def _execute_node(
         self,
@@ -161,6 +205,7 @@ class GraphExecutor:
             finally:
                 component.teardown(context)
                 context.metadata.deadline = None
+            self._record_suspension(node_id, context)
 
             node_elapsed = time.time() - start_time
             context.metadata.record_timing(
@@ -210,11 +255,24 @@ class GraphExecutor:
 
         return context
 
-    def _execute_dag(self, context: FlowContext) -> FlowContext:
+    @staticmethod
+    def _record_suspension(node_id: str, context: FlowContext) -> None:
+        """Pin ``suspended_at_node`` to the executing node's id.
+
+        Components call ``context.suspend(name, ...)`` without knowing which
+        node they run as; the executor does, and resume needs the node id.
+        """
+        if context.metadata.suspended:
+            context.metadata.suspended_at_node = node_id
+
+    def _execute_dag(
+        self, context: FlowContext, resume_node: str | None = None
+    ) -> FlowContext:
         """Execute a DAG flow using topological ordering.
 
-        This is the original execute() logic, preserved unchanged for
-        acyclic graphs.
+        On resume, completed nodes are skipped but propagate the port they set
+        when they ran, and ``resume_node`` is activated explicitly, so execution
+        re-enters exactly where it suspended.
         """
         flow_start_time = time.time()
 
@@ -222,19 +280,24 @@ class GraphExecutor:
         order = self._topological_sort()
 
         # Track which nodes are reachable (activated by an incoming edge)
-        # Root nodes are always reachable
+        # Root nodes are always reachable; so is the node being resumed
         roots = set(self._find_roots())
         activated: set[str] = set(roots)
+        if resume_node is not None:
+            activated.add(resume_node)
 
         for node_id in order:
             node = self._nodes[node_id]
 
             # Skip already-completed nodes (resume support)
-            # But still propagate activation to downstream nodes
+            # But still propagate activation to downstream nodes, through the
+            # port the node set when it ran
             if node_id in context.metadata.completed_nodes:
                 logger.debug(f"Skipping already-completed node: {node_id}")
-                # Propagate unconditional edges (we don't know the port from before)
-                reachable_targets = self._get_reachable_targets(node_id, None, context)
+                stored_port = context.metadata.node_ports.get(node_id)
+                reachable_targets = self._get_reachable_targets(
+                    node_id, stored_port, context
+                )
                 activated.update(reachable_targets)
                 continue
 
@@ -265,14 +328,18 @@ class GraphExecutor:
             # Mark node completed only after successful non-suspended execution
             context.metadata.completed_nodes.append(node_id)
 
-            # Determine which downstream nodes to activate based on port
+            # Determine which downstream nodes to activate based on port, and
+            # remember the port so a resume activates the same edges
             active_port = context.get_active_port()
+            context.metadata.node_ports[node_id] = active_port
             reachable_targets = self._get_reachable_targets(node_id, active_port, context)
             activated.update(reachable_targets)
 
         return context
 
-    def _execute_cyclic(self, context: FlowContext) -> FlowContext:
+    def _execute_cyclic(
+        self, context: FlowContext, resume_node: str | None = None
+    ) -> FlowContext:
         """Execute a cyclic graph using a ready-queue executor.
 
         Uses a BFS-style ready queue. Iteration count increments each time
@@ -281,6 +348,12 @@ class GraphExecutor:
         - max_iterations is exceeded (controlled by on_max_iterations policy)
         - A per-node max_visits limit is reached
         - Global timeout expires
+
+        On resume the queue holds the suspended node followed by the nodes
+        that were still queued when it suspended (``metadata.pending_nodes``);
+        the roots are never re-enqueued. A suspended execution is not a visit:
+        ``node_visit_counts`` counts completed executions only, so the resumed
+        node is neither double-counted nor exhausted by its own suspension.
         """
         flow_start_time = time.time()
 
@@ -294,13 +367,10 @@ class GraphExecutor:
         visit_counts: dict[str, int] = dict(context.metadata.node_visit_counts)
         iteration = context.metadata.iteration_count
 
-        # Build ready queue — on resume, start from suspended node
-        ready_queue: deque[str] = deque()
-        if context.metadata.suspended_at_node:
-            # Resuming from suspension — re-enqueue the suspended node
-            ready_queue.append(context.metadata.suspended_at_node)
-        else:
-            ready_queue.extend(roots)
+        # Build ready queue — on resume, start from the suspended node and
+        # whatever was still queued behind it
+        ready_queue: deque[str] = self._initial_queue(context, resume_node, roots)
+        re_entering = resume_node is not None
 
         iter_start: float | None = None  # Track iteration start for duration
 
@@ -308,41 +378,36 @@ class GraphExecutor:
             node_id = ready_queue.popleft()
             node = self._nodes[node_id]
 
-            # 1. Check per-node visit limit
-            effective_max = self._effective_max_visits(node_id)
-            if visit_counts.get(node_id, 0) >= effective_max:
-                continue  # This path is exhausted
+            # On re-entry the suspended node already passed the visit and
+            # iteration checks before it ran; do not apply them twice
+            if re_entering and node_id == resume_node:
+                re_entering = False
+            else:
+                # 1. Check per-node visit limit
+                effective_max = self._effective_max_visits(node_id)
+                if visit_counts.get(node_id, 0) >= effective_max:
+                    continue  # This path is exhausted
 
-            # 2. Check iteration limit (only at back-edge targets that have
-            #    already been visited — first visit is not a "loop")
-            if node_id in self._back_edge_targets and visit_counts.get(node_id, 0) > 0:
-                # The previous iteration just completed
-                iter_end = time.time()
-                self._notify(
-                    "on_iteration_complete", iteration, node_id, context,
-                    iter_end - (iter_start if iter_start else flow_start_time),
-                )
-
-                iteration += 1
-                context.metadata.iteration_count = iteration
-                iter_start = time.time()
-
-                # Fire iteration start hook
-                self._notify("on_iteration_start", iteration, node_id, context)
-
-                if iteration > self._settings.max_iterations:
-                    self._handle_max_iterations(context, node_id, iteration)
-                    break
+                # 2. Check iteration limit (only at back-edge targets that have
+                #    already been visited — first visit is not a "loop")
+                if (
+                    node_id in self._back_edge_targets
+                    and visit_counts.get(node_id, 0) > 0
+                ):
+                    iteration, iter_start = self._enter_iteration(
+                        context, node_id, iteration, iter_start, flow_start_time
+                    )
+                    if iteration > self._settings.max_iterations:
+                        self._handle_max_iterations(context, node_id, iteration)
+                        break
 
             # 3. Execute the node
             context = self._execute_node(node_id, node, context, flow_start_time)
 
-            # 4. Update visit tracking
-            visit_counts[node_id] = visit_counts.get(node_id, 0) + 1
-            context.metadata.node_visit_counts = dict(visit_counts)
-
-            # 5. Handle suspension (checkpoint/resume)
+            # 4. Handle suspension (checkpoint/resume) — the queue is kept so
+            #    the resume continues the fan-out; the visit is not counted
             if context.metadata.suspended:
+                context.metadata.pending_nodes = list(ready_queue)
                 self._notify(
                     "on_flow_suspended",
                     node_id,
@@ -351,6 +416,10 @@ class GraphExecutor:
                 )
                 return context
 
+            # 5. Update visit tracking
+            visit_counts[node_id] = visit_counts.get(node_id, 0) + 1
+            context.metadata.node_visit_counts = dict(visit_counts)
+
             # 6. Track completion for non-cycle nodes only
             # Cycle-participating nodes use visit_counts, not completed_nodes
             if node_id not in cycle_nodes:
@@ -358,6 +427,7 @@ class GraphExecutor:
 
             # 7. Enqueue downstream based on port routing
             active_port = context.get_active_port()
+            context.metadata.node_ports[node_id] = active_port
             for target in self._get_reachable_targets(node_id, active_port, context):
                 ready_queue.append(target)
 
@@ -375,6 +445,38 @@ class GraphExecutor:
             )
 
         return context
+
+    def _initial_queue(
+        self, context: FlowContext, resume_node: str | None, roots: list[str]
+    ) -> deque[str]:
+        """Ready queue for a cyclic run: the roots, or the resume node plus
+        the nodes that were still queued when the graph suspended."""
+        if resume_node is None:
+            return deque(roots)
+        queue: deque[str] = deque([resume_node])
+        queue.extend(context.metadata.pending_nodes)
+        context.metadata.pending_nodes = []
+        return queue
+
+    def _enter_iteration(
+        self,
+        context: FlowContext,
+        node_id: str,
+        iteration: int,
+        iter_start: float | None,
+        flow_start_time: float,
+    ) -> tuple[int, float]:
+        """Close the previous iteration and open the next at a back-edge target."""
+        iter_end = time.time()
+        self._notify(
+            "on_iteration_complete", iteration, node_id, context,
+            iter_end - (iter_start if iter_start else flow_start_time),
+        )
+        iteration += 1
+        context.metadata.iteration_count = iteration
+        iter_start = time.time()
+        self._notify("on_iteration_start", iteration, node_id, context)
+        return iteration, iter_start
 
     # ── Async mirrors (support components with coroutine `process`) ──────
     # These mirror the sync _execute_node/_execute_dag/_execute_cyclic above;
@@ -432,6 +534,7 @@ class GraphExecutor:
             finally:
                 component.teardown(context)
                 context.metadata.deadline = None
+            self._record_suspension(node_id, context)
 
             node_elapsed = time.time() - start_time
             context.metadata.record_timing(node.component, node_elapsed, step_started_at)
@@ -462,17 +565,24 @@ class GraphExecutor:
 
         return context
 
-    async def _execute_dag_async(self, context: FlowContext) -> FlowContext:
+    async def _execute_dag_async(
+        self, context: FlowContext, resume_node: str | None = None
+    ) -> FlowContext:
         """Async twin of :meth:`_execute_dag`."""
         flow_start_time = time.time()
         order = self._topological_sort()
         roots = set(self._find_roots())
         activated: set[str] = set(roots)
+        if resume_node is not None:
+            activated.add(resume_node)
 
         for node_id in order:
             node = self._nodes[node_id]
             if node_id in context.metadata.completed_nodes:
-                activated.update(self._get_reachable_targets(node_id, None, context))
+                stored_port = context.metadata.node_ports.get(node_id)
+                activated.update(
+                    self._get_reachable_targets(node_id, stored_port, context)
+                )
                 continue
             if node_id not in activated:
                 logger.info(f"Skipping unreachable node: {node_id}")
@@ -492,12 +602,15 @@ class GraphExecutor:
 
             context.metadata.completed_nodes.append(node_id)
             active_port = context.get_active_port()
+            context.metadata.node_ports[node_id] = active_port
             activated.update(
                 self._get_reachable_targets(node_id, active_port, context)
             )
         return context
 
-    async def _execute_cyclic_async(self, context: FlowContext) -> FlowContext:
+    async def _execute_cyclic_async(
+        self, context: FlowContext, resume_node: str | None = None
+    ) -> FlowContext:
         """Async twin of :meth:`_execute_cyclic`."""
         flow_start_time = time.time()
         cycle_nodes = self._identify_cycle_nodes()
@@ -505,51 +618,51 @@ class GraphExecutor:
         visit_counts: dict[str, int] = dict(context.metadata.node_visit_counts)
         iteration = context.metadata.iteration_count
 
-        ready_queue: deque[str] = deque()
-        if context.metadata.suspended_at_node:
-            ready_queue.append(context.metadata.suspended_at_node)
-        else:
-            ready_queue.extend(roots)
+        ready_queue: deque[str] = self._initial_queue(context, resume_node, roots)
+        re_entering = resume_node is not None
 
         iter_start: float | None = None
         while ready_queue:
             node_id = ready_queue.popleft()
             node = self._nodes[node_id]
 
-            if visit_counts.get(node_id, 0) >= self._effective_max_visits(node_id):
-                continue
+            if re_entering and node_id == resume_node:
+                re_entering = False
+            else:
+                if visit_counts.get(node_id, 0) >= self._effective_max_visits(node_id):
+                    continue
 
-            if node_id in self._back_edge_targets and visit_counts.get(node_id, 0) > 0:
-                iter_end = time.time()
-                self._notify(
-                    "on_iteration_complete", iteration, node_id, context,
-                    iter_end - (iter_start if iter_start else flow_start_time),
-                )
-                iteration += 1
-                context.metadata.iteration_count = iteration
-                iter_start = time.time()
-                self._notify("on_iteration_start", iteration, node_id, context)
-                if iteration > self._settings.max_iterations:
-                    self._handle_max_iterations(context, node_id, iteration)
-                    break
+                if (
+                    node_id in self._back_edge_targets
+                    and visit_counts.get(node_id, 0) > 0
+                ):
+                    iteration, iter_start = self._enter_iteration(
+                        context, node_id, iteration, iter_start, flow_start_time
+                    )
+                    if iteration > self._settings.max_iterations:
+                        self._handle_max_iterations(context, node_id, iteration)
+                        break
 
             context = await self._execute_node_async(
                 node_id, node, context, flow_start_time
             )
-            visit_counts[node_id] = visit_counts.get(node_id, 0) + 1
-            context.metadata.node_visit_counts = dict(visit_counts)
 
             if context.metadata.suspended:
+                context.metadata.pending_nodes = list(ready_queue)
                 self._notify(
                     "on_flow_suspended", node_id,
                     context.metadata.suspension_reason or "", None,
                 )
                 return context
 
+            visit_counts[node_id] = visit_counts.get(node_id, 0) + 1
+            context.metadata.node_visit_counts = dict(visit_counts)
+
             if node_id not in cycle_nodes:
                 context.metadata.completed_nodes.append(node_id)
 
             active_port = context.get_active_port()
+            context.metadata.node_ports[node_id] = active_port
             for target in self._get_reachable_targets(node_id, active_port, context):
                 ready_queue.append(target)
 

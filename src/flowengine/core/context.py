@@ -228,6 +228,12 @@ class ExecutionMetadata:
     suspended_at_node: Optional[str] = None
     suspension_reason: Optional[str] = None
     completed_nodes: list[str] = field(default_factory=list)
+    # Active output port recorded for each completed node (None when the node
+    # set no port). Resume uses it to re-activate the same downstream edges.
+    node_ports: dict[str, str | None] = field(default_factory=dict)
+    # Nodes still queued when a cyclic graph suspended (resume re-enqueues them
+    # after the suspended node).
+    pending_nodes: list[str] = field(default_factory=list)
 
     # Cyclic graph execution tracking
     node_visit_counts: dict[str, int] = field(default_factory=dict)
@@ -504,6 +510,8 @@ class FlowContext:
                 "suspended_at_node": self.metadata.suspended_at_node,
                 "suspension_reason": self.metadata.suspension_reason,
                 "completed_nodes": self.metadata.completed_nodes,
+                "node_ports": self.metadata.node_ports,
+                "pending_nodes": self.metadata.pending_nodes,
                 "node_visit_counts": self.metadata.node_visit_counts,
                 "iteration_count": self.metadata.iteration_count,
                 "loop_timings": self.metadata.loop_timings,
@@ -592,6 +600,10 @@ class FlowContext:
         )
         context.metadata.completed_nodes = list(
             metadata_dict.get("completed_nodes", [])
+        )
+        context.metadata.node_ports = dict(metadata_dict.get("node_ports", {}))
+        context.metadata.pending_nodes = list(
+            metadata_dict.get("pending_nodes", [])
         )
 
         # Restore cyclic graph execution state

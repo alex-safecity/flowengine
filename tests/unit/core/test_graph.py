@@ -457,7 +457,8 @@ class TestGraphSuspension:
         result = engine.execute()
 
         assert result.metadata.suspended is True
-        assert result.metadata.suspended_at_node == "comp_suspend"
+        # The executor records the node id, whatever the component passed
+        assert result.metadata.suspended_at_node == "s"
         assert "comp_c" not in result.get("order")
 
 
