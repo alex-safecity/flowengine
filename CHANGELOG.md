@@ -56,6 +56,12 @@ executor now re-enters the graph at the node that suspended.
   `BINDING_TYPE_MISMATCH`, `BINDING_EXPR_INVALID`.
 - `ComponentMeta.data_classes` — the data classes a component may emit or
   handle (policy vocabulary), exported in the catalog entry.
+- `FlowSettings.executor` (`"graph"`) — the executor path a graph flow commits
+  to; runtimes may require it.
+- `metadata.guard_decisions` — verdicts of a runtime guard (one dict per
+  decision), serialised with the context. The port name `error` is implicit on
+  every node (`UNDECLARED_PORT` does not fire for it): a guard that blocks a
+  step routes on it, so authors can wire a fallback edge.
 
 ### Changed
 

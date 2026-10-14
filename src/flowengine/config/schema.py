@@ -99,6 +99,13 @@ class FlowSettings(BaseModel):
         default_factory=list,
         description="Reserved for v0.3.1: context keys to check for convergence",
     )
+    executor: Optional[Literal["graph"]] = Field(
+        default=None,
+        description=(
+            "Executor path a graph flow commits to. 'graph' = the GraphExecutor "
+            "(ports, conditions, cycles, bindings, resume); runtimes may require it."
+        ),
+    )
 
 
 class StepConfig(BaseModel):

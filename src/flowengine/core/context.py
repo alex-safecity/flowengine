@@ -234,6 +234,9 @@ class ExecutionMetadata:
     # Nodes still queued when a cyclic graph suspended (resume re-enqueues them
     # after the suspended node).
     pending_nodes: list[str] = field(default_factory=list)
+    # Verdicts of a runtime guard, one dict per decision (node_id, verdict,
+    # rule_id, phase, message, ...). Written by the invocation contract.
+    guard_decisions: list[dict[str, Any]] = field(default_factory=list)
 
     # Cyclic graph execution tracking
     node_visit_counts: dict[str, int] = field(default_factory=dict)
@@ -512,6 +515,7 @@ class FlowContext:
                 "completed_nodes": self.metadata.completed_nodes,
                 "node_ports": self.metadata.node_ports,
                 "pending_nodes": self.metadata.pending_nodes,
+                "guard_decisions": self.metadata.guard_decisions,
                 "node_visit_counts": self.metadata.node_visit_counts,
                 "iteration_count": self.metadata.iteration_count,
                 "loop_timings": self.metadata.loop_timings,
@@ -604,6 +608,9 @@ class FlowContext:
         context.metadata.node_ports = dict(metadata_dict.get("node_ports", {}))
         context.metadata.pending_nodes = list(
             metadata_dict.get("pending_nodes", [])
+        )
+        context.metadata.guard_decisions = list(
+            metadata_dict.get("guard_decisions", [])
         )
 
         # Restore cyclic graph execution state

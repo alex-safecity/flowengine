@@ -29,6 +29,10 @@ from flowengine.config.registry import ComponentRegistry, load_component_class
 from flowengine.config.schema import FlowConfig
 from flowengine.errors import ConfigurationError
 
+#: Port every node may route on without declaring it: a runtime guard that
+#: blocks a step sets it, so authors can wire a fallback (``port: error``).
+IMPLICIT_ERROR_PORT = "error"
+
 
 def resolve_component_meta(
     type_path: str,
@@ -146,8 +150,8 @@ def _check_ports(
         return issues
     _, _, node_component = _graph_adjacency(config)
     for i, edge in enumerate(config.flow.edges or []):
-        if edge.port is None:
-            continue
+        if edge.port is None or edge.port == IMPLICIT_ERROR_PORT:
+            continue  # every node has an implicit error port (a guard BLOCK takes it)
         comp_name = node_component.get(edge.source)
         meta = metas.get(comp_name) if comp_name else None
         if meta is None or not meta.ports:
